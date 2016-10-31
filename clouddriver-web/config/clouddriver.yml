@@ -4,13 +4,13 @@ server:
     enabled: false
 
 redis:
-  connection: redis://localhost:6379
+  connection: redis://${REDIS_HOST:localhost}:6379
   scheduler: default
   parallelism: -1
 
 services:
   front50:
-    baseUrl: http://localhost:8080
+    baseUrl: http://${FRONT50_HOST:localhost}:8080
 
 swagger:
   enabled: true

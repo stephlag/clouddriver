@@ -124,7 +124,11 @@ azure:
   #      region: "westus"
 
 google:
-  enabled: false
+  enabled: ${GOOGLE_ENABLED:false}
+  accounts:
+    - name: primary
+      project: ${GCE_PROJECT:sample}
+      jsonPath: '/opt/spinnaker/gce.credentials'
   baseImageProjects:
   - centos-cloud
   - coreos-cloud

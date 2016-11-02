@@ -128,7 +128,7 @@ google:
   accounts:
     - name: primary
       project: ${GCE_PROJECT:sample}
-      jsonPath: '/opt/spinnaker/gce.credentials'
+      jsonPath: '/opt/clouddriver/config/gce.credentials'
   baseImageProjects:
   - centos-cloud
   - coreos-cloud

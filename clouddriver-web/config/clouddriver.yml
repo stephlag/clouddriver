@@ -128,7 +128,7 @@ google:
   accounts:
     - name: primary
       project: ${GCE_PROJECT:sample}
-      jsonPath: '/opt/clouddriver/config/gce.credentials'
+      jsonPath: '/opt/clouddriver/credentials/gce.credentials'
   baseImageProjects:
   - centos-cloud
   - coreos-cloud

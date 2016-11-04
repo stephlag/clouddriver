@@ -1,15 +1,13 @@
-FROM java:8
+FROM java:8-jre
 
 MAINTAINER delivery-engineering@netflix.com
 
-COPY . workdir/
+COPY ./clouddriver-web/build/distributions/*.deb workdir/packages/
 
 WORKDIR workdir
 
-RUN mkdir /opt/clouddriver/credentials
-
 VOLUME /opt/clouddriver/credentials
 
-RUN GRADLE_USER_HOME=cache ./gradlew buildDeb -x test && dpkg -i ./clouddriver-web/build/distributions/*.deb
+RUN dpkg -i ./packages/*.deb
 
 CMD ["/opt/clouddriver/bin/clouddriver"]

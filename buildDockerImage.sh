@@ -9,4 +9,4 @@ if [ ! -z "$1" ]
 		dockertag=latest
 fi
 
-docker build -t jmonsinjon/spinnaker-clouddriver:"$dockertag" .
+docker build -t stephlag/spinnaker-clouddriver:"$dockertag" .

@@ -64,7 +64,7 @@ class Utils {
     return lastIndex != -1 ? fullUrl.substring(lastIndex + 1) : fullUrl
   }
 
-  static String getTargetProxyType(String fullUrl) {
+  static GoogleTargetProxyType getTargetProxyType(String fullUrl) {
     if (!fullUrl) {
       throw new IllegalFormatException("Target proxy url ${fullUrl} malformed.")
     }
@@ -74,7 +74,20 @@ class Utils {
       throw new IllegalFormatException("Target proxy url ${fullUrl} malformed.")
     }
     String withoutName = fullUrl.substring(0, lastIndex)
-    return getLocalName(withoutName)
+    switch (getLocalName(withoutName)) {
+      case 'targetHttpProxies':
+        return GoogleTargetProxyType.HTTP
+        break
+      case 'targetHttpsProxies':
+        return GoogleTargetProxyType.HTTPS
+        break
+      case 'targetSslProxies':
+        return GoogleTargetProxyType.SSL
+        break
+      default:
+        throw new IllegalFormatException("Target proxy url ${fullUrl} has unknown type.")
+        break
+    }
   }
 
   static String getZoneFromInstanceUrl(String fullUrl) {
@@ -135,6 +148,62 @@ class Utils {
         throw new IllegalFormatException("Server group Url ${fullUrl} malformed.")
         break
     }
+  }
+
+  static String getZoneFromGroupUrl(String fullUrl) {
+    if (!fullUrl) {
+      return fullUrl
+    }
+
+    def urlParts = fullUrl.split("/")
+
+    if (urlParts.length < 4) {
+      throw new IllegalFormatException("Server group url ${fullUrl} malformed.")
+    }
+
+    String regionsOrZones = urlParts[urlParts.length - 4]
+    switch (regionsOrZones) {
+      case "regions":
+        throw new IllegalFormatException("Can't parse a zone from regional group url ${fullUrl}.")
+        break
+      case "zones":
+        return urlParts[urlParts.length - 3]
+        break
+      default:
+        throw new IllegalFormatException("Server group url ${fullUrl} malformed.")
+        break
+    }
+  }
+
+  /**
+   * Determine if a server group is regional or zonal from the fullUrl.
+   * @param fullUrl
+   * @return Type of server group.
+   */
+  static GoogleServerGroup.ServerGroupType determineServerGroupType(String fullUrl) {
+    if (!fullUrl) {
+      return fullUrl
+    }
+
+    def urlParts = fullUrl.split("/")
+
+    if (urlParts.length < 4) {
+      throw new IllegalFormatException("Server group Url ${fullUrl} malformed.")
+    }
+
+    String regionsOrZones = urlParts[urlParts.length - 4]
+    switch (regionsOrZones) {
+      case 'regions':
+        return GoogleServerGroup.ServerGroupType.REGIONAL
+        break
+      case 'zones':
+        return GoogleServerGroup.ServerGroupType.ZONAL
+        break
+      default:
+        throw new IllegalFormatException("Server group Url ${fullUrl} malformed.")
+        break
+    }
+    return regionsOrZones
   }
 
   // TODO(duftler): Consolidate this method with the same one from kato/GCEUtil and move to a common library.

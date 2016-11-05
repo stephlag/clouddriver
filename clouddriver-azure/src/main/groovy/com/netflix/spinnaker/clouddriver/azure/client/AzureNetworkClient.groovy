@@ -317,7 +317,9 @@ class AzureNetworkClient extends AzureBaseClient {
         appGateway.tags.cluster = parsedName.cluster
         // TODO: debug only; remove this as part of the cleanup
         appGateway.tags.serverGroups = agDescription.serverGroups.join(" ")
+        log.info("Adding backend address pool to ${appGateway.name} for server group ${serverGroupName}")
         executeOp({appGatewayOps.createOrUpdate(resourceGroupName, appGatewayName, appGateway)})
+        log.info("Backend address pool added")
       }
 
       return "${appGateway.id}/backendAddressPools/${serverGroupName}"

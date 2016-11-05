@@ -16,6 +16,7 @@
 
 package com.netflix.spinnaker.clouddriver.azure.client
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.microsoft.azure.CloudException
 import com.microsoft.azure.credentials.ApplicationTokenCredentials
 import com.microsoft.azure.management.network.models.VirtualNetwork
@@ -85,7 +86,7 @@ class AzureResourceManagerClient extends AzureBaseClient {
                                                 String region,
                                                 String resourceName,
                                                 String resourceType,
-                                                Map<String, String> templateParams = [:]) {
+                                                Map<String, Object> templateParams = [:]) {
 
     String deploymentName = [resourceName, resourceType, "deployment"].join(AzureUtilities.NAME_SEPARATOR)
     if (!templateParams['location']) {
@@ -226,7 +227,7 @@ class AzureResourceManagerClient extends AzureBaseClient {
     DeploymentMode deploymentMode,
     String deploymentName,
     String template,
-    Map<String, String> templateParameters) {
+    Map<String, Object> templateParameters) {
 
     DeploymentProperties deploymentProperties = new DeploymentProperties()
     deploymentProperties.setMode(deploymentMode)
@@ -235,24 +236,43 @@ class AzureResourceManagerClient extends AzureBaseClient {
     // Deserialize to pass it as an instance of a JSON Node object
     deploymentProperties.setTemplate(mapper.readTree(template))
 
-    // initialize the parameters for resourceManagementClientthis template
+    // initialize the parameters for this template. If the parameter is not a String,
+    // then treat it as a Reference Parameter
     if (templateParameters) {
-      Map<String, ParameterValue> parameters = new HashMap<String, ParameterValue>()
-      for (Map.Entry<String, String> entry : templateParameters.entrySet()) {
-        parameters.put(entry.getKey(), new ParameterValue(entry.getValue()))
-      }
-
-      deploymentProperties.setParameters(mapper.readTree(mapper.writeValueAsString(parameters)))
+      deploymentProperties.setParameters(mapper.readTree(convertParametersToTemplateJSON(mapper, templateParameters)))
     }
 
     // kick off the deployment
     Deployment deployment = new Deployment()
     deployment.setProperties(deploymentProperties)
 
-    return resourceManagementClient?.
-      getDeploymentsOperations()?.
-      createOrUpdate(resourceGroupName, deploymentName, deployment)?.
-      body
+    try {
+      return resourceManagementClient?.
+        getDeploymentsOperations()?.
+        createOrUpdate(resourceGroupName, deploymentName, deployment)?.
+        body
+    } catch (CloudException ce) {  //TODO: (masm) move this error handling logic into the operation classes as part of refactoring how we monitor/report deployment operations/errors
+      log.error("Azure Deployment Error: ${ce.body.message}")
+      throw ce
+    } catch (Exception e) {
+      log.error("Exception occured during deployment ${e.message}")
+      throw e
+    } finally {
+      log.info("Template for deployment {}: {}", deploymentName, template)
+    }
+  }
+
+  static String convertParametersToTemplateJSON(ObjectMapper mapper, Map<String, Object> sourceParameters) {
+    def parameters = [:]
+    sourceParameters.each {
+      if (it.value.class == String) {
+        parameters[it.key] = new ValueParameter(it.value)
+      }
+      else {
+        parameters[it.key] = new ReferenceParameter(it.value)
+      }
+    }
+    mapper.writeValueAsString(parameters)
   }
 
   /**
@@ -294,8 +314,13 @@ class AzureResourceManagerClient extends AzureBaseClient {
   }
 
   @Canonical
-  private static class ParameterValue {
-    String value
+  private static class ValueParameter {
+    Object value
+  }
+
+  @Canonical
+  private static class ReferenceParameter {
+    Object reference
   }
 
 }

@@ -714,6 +714,14 @@ class GCEUtil {
     def regionalLoadBalancersInMetadata = metadataMap?.(GoogleServerGroup.View.REGIONAL_LOAD_BALANCER_NAMES)?.tokenize(",") ?: []
     def internalLoadBalancersToAddTo = queryAllLoadBalancers(googleLoadBalancerProvider, regionalLoadBalancersInMetadata, task, phase)
       .findAll { it.loadBalancerType == GoogleLoadBalancerType.INTERNAL }
+    if (!internalLoadBalancersToAddTo) {
+      log.warn("Cache call missed for internal load balancer, making a call to GCP")
+      List<ForwardingRule> projectRegionalForwardingRules = compute.forwardingRules().list(project, region).execute().getItems()
+      internalLoadBalancersToAddTo = projectRegionalForwardingRules.findAll {
+        // TODO(jacobkiefer): Update this check if any other types of loadbalancers support backend services from regional forwarding rules.
+        it.backendService && it.name in serverGroup.loadBalancers
+      }
+    }
 
     if (internalLoadBalancersToAddTo) {
       internalLoadBalancersToAddTo.each { GoogleLoadBalancerView loadBalancerView ->
@@ -752,6 +760,14 @@ class GCEUtil {
     def allFoundLoadBalancers = (httpLoadBalancersInMetadata + networkLoadBalancersInMetadata) as List<String>
     def httpLoadBalancersToAddTo = queryAllLoadBalancers(googleLoadBalancerProvider, allFoundLoadBalancers, task, phase)
         .findAll { it.loadBalancerType == GoogleLoadBalancerType.HTTP }
+    if (!httpLoadBalancersToAddTo) {
+      log.warn("Cache call missed for Http load balancers ${httpLoadBalancersInMetadata}, making a call to GCP")
+      List<ForwardingRule> projectGlobalForwardingRules = compute.globalForwardingRules().list(project).execute().getItems()
+      httpLoadBalancersToAddTo = projectGlobalForwardingRules.findAll { ForwardingRule forwardingRule ->
+        forwardingRule.target && Utils.getTargetProxyType(forwardingRule.target) != GoogleTargetProxyType.SSL &&
+          forwardingRule.name in serverGroup.loadBalancers
+      }
+    }
 
     if (httpLoadBalancersToAddTo) {
       String policyJson = metadataMap?.(GoogleServerGroup.View.LOAD_BALANCING_POLICY)
@@ -777,6 +793,58 @@ class GCEUtil {
           compute.backendServices().update(project, backendServiceName, backendService).execute()
           task.updateStatus phase, "Enabled backend for server group ${serverGroupName} in Http(s) load balancer backend service ${backendServiceName}."
         }
+      }
+    }
+  }
+
+  static void addSslLoadBalancerBackends(Compute compute,
+                                         ObjectMapper objectMapper,
+                                         String project,
+                                         GoogleServerGroup.View serverGroup,
+                                         GoogleLoadBalancerProvider googleLoadBalancerProvider,
+                                         Task task,
+                                         String phase) {
+    String serverGroupName = serverGroup.name
+    Metadata instanceMetadata = serverGroup?.launchConfig?.instanceTemplate?.properties?.metadata
+    Map metadataMap = buildMapFromMetadata(instanceMetadata)
+    def globalLoadBalancersInMetadata = metadataMap?.(GoogleServerGroup.View.GLOBAL_LOAD_BALANCER_NAMES)?.tokenize(",") ?: []
+    def regionalLoadBalancersInMetadata = metadataMap?.(GoogleServerGroup.View.REGIONAL_LOAD_BALANCER_NAMES)?.tokenize(",") ?: []
+
+    def allFoundLoadBalancers = (globalLoadBalancersInMetadata + regionalLoadBalancersInMetadata) as List<String>
+    def sslLoadBalancersToAddTo = queryAllLoadBalancers(googleLoadBalancerProvider, allFoundLoadBalancers, task, phase)
+      .findAll { it.loadBalancerType == GoogleLoadBalancerType.SSL }
+    if (!sslLoadBalancersToAddTo) {
+      log.warn("Cache call missed for ssl load balancer, making a call to GCP")
+      List<ForwardingRule> projectGlobalForwardingRules = compute.globalForwardingRules().list(project).execute().getItems()
+      sslLoadBalancersToAddTo = projectGlobalForwardingRules.findAll { ForwardingRule forwardingRule ->
+        forwardingRule.target && Utils.getTargetProxyType(forwardingRule.target) == GoogleTargetProxyType.SSL &&
+          forwardingRule.name in serverGroup.loadBalancers
+      }
+    }
+
+    if (sslLoadBalancersToAddTo) {
+      String policyJson = metadataMap?.(GoogleServerGroup.View.LOAD_BALANCING_POLICY)
+      if (!policyJson) {
+        updateStatusAndThrowNotFoundException("Load Balancing Policy not found for server group ${serverGroupName}", task, phase)
+      }
+      GoogleHttpLoadBalancingPolicy policy = objectMapper.readValue(policyJson, GoogleHttpLoadBalancingPolicy)
+
+      sslLoadBalancersToAddTo.each { GoogleLoadBalancerView loadBalancerView ->
+        def sslView = loadBalancerView as GoogleSslLoadBalancer.View
+        String backendServiceName = sslView.backendService.name
+        BackendService backendService = compute.backendServices().get(project, backendServiceName).execute()
+        Backend backendToAdd = backendFromLoadBalancingPolicy(policy)
+        if (serverGroup.regional) {
+          backendToAdd.setGroup(buildRegionalServerGroupUrl(project, serverGroup.region, serverGroupName))
+        } else {
+          backendToAdd.setGroup(buildZonalServerGroupUrl(project, serverGroup.zone, serverGroupName))
+        }
+        if (backendService.backends == null) {
+          backendService.backends = []
+        }
+        backendService.backends << backendToAdd
+        compute.backendServices().update(project, backendServiceName, backendService).execute()
+        task.updateStatus phase, "Enabled backend for server group ${serverGroupName} in ssl load balancer backend service ${backendServiceName}."
       }
     }
   }
@@ -812,6 +880,42 @@ class GCEUtil {
     )
   }
 
+  static void destroySslLoadBalancerBackends(Compute compute,
+                                             String project,
+                                             GoogleServerGroup.View serverGroup,
+                                             GoogleLoadBalancerProvider googleLoadBalancerProvider,
+                                             Task task,
+                                             String phase) {
+    def serverGroupName = serverGroup.name
+    def region = serverGroup.region
+    def foundSslLoadBalancers = googleLoadBalancerProvider.getApplicationLoadBalancers("").findAll {
+      it.name in serverGroup.loadBalancers && it.loadBalancerType == GoogleLoadBalancerType.SSL
+    }
+    if (!foundSslLoadBalancers) {
+      log.warn("Cache call missed for ssl load balancer, making a call to GCP")
+      List<ForwardingRule> projectGlobalForwardingRules = compute.globalForwardingRules().list(project).execute().getItems()
+      foundSslLoadBalancers = projectGlobalForwardingRules.findAll { ForwardingRule forwardingRule ->
+        forwardingRule.target && Utils.getTargetProxyType(forwardingRule.target) == GoogleTargetProxyType.SSL &&
+          forwardingRule.name in serverGroup.loadBalancers
+      }
+    }
+    log.debug("Attempting to delete backends for ${serverGroup.name} from the following global load balancers: ${foundSslLoadBalancers.collect { it.name }}")
+
+    if (foundSslLoadBalancers) {
+      foundSslLoadBalancers.each { GoogleLoadBalancerView loadBalancerView ->
+        def sslView = loadBalancerView as GoogleSslLoadBalancer.View
+        String backendServiceName = sslView.backendService.name
+        BackendService backendService = compute.backendServices().get(project, backendServiceName).execute()
+        backendService?.backends?.removeAll { Backend backend ->
+          (getLocalName(backend.group) == serverGroupName) &&
+            (Utils.getRegionFromGroupUrl(backend.group) == region)
+        }
+        compute.backendServices().update(project, backendServiceName, backendService).execute()
+        task.updateStatus phase, "Deleted backend for server group ${serverGroupName} from ssl load balancer backend service ${backendServiceName}."
+      }
+    }
+  }
+
   static void destroyInternalLoadBalancerBackends(Compute compute,
                                                   String project,
                                                   GoogleServerGroup.View serverGroup,
@@ -822,6 +926,14 @@ class GCEUtil {
     def region = serverGroup.region
     def foundInternalLoadBalancers = googleLoadBalancerProvider.getApplicationLoadBalancers("").findAll {
       it.name in serverGroup.loadBalancers && it.loadBalancerType == GoogleLoadBalancerType.INTERNAL
+    }
+    if (!foundInternalLoadBalancers) {
+      log.warn("Cache call missed for internal load balancer, making a call to GCP")
+      List<ForwardingRule> projectRegionalForwardingRules = compute.forwardingRules().list(project, region).execute().getItems()
+      foundInternalLoadBalancers = projectRegionalForwardingRules.findAll {
+        // TODO(jacobkiefer): Update this check if any other types of loadbalancers support backend services from regional forwarding rules.
+        it.backendService && it.name in serverGroup.loadBalancers
+      }
     }
     log.debug("Attempting to delete backends for ${serverGroup.name} from the following regional load balancers: ${foundInternalLoadBalancers.collect { it.name }}")
 
@@ -848,12 +960,22 @@ class GCEUtil {
                                               String phase) {
     def serverGroupName = serverGroup.name
     def httpLoadBalancersInMetadata = serverGroup?.asg?.get(GoogleServerGroup.View.GLOBAL_LOAD_BALANCER_NAMES) ?: []
+    log.debug("Attempting to delete backends for ${serverGroup.name} from the following Http load balancers: ${httpLoadBalancersInMetadata}")
+
+    log.debug("Looking up the following Http load balancers in the cache: ${httpLoadBalancersInMetadata}")
     def foundHttpLoadBalancers = googleLoadBalancerProvider.getApplicationLoadBalancers("").findAll {
       it.name in serverGroup.loadBalancers && it.loadBalancerType == GoogleLoadBalancerType.HTTP
     }
-    def notDeleted = httpLoadBalancersInMetadata - (foundHttpLoadBalancers.collect { it.name })
+    if (!foundHttpLoadBalancers) {
+      log.warn("Cache call missed for Http load balancers ${httpLoadBalancersInMetadata}, making a call to GCP")
+      List<ForwardingRule> projectGlobalForwardingRules = compute.globalForwardingRules().list(project).execute().getItems()
+      foundHttpLoadBalancers = projectGlobalForwardingRules.findAll { ForwardingRule forwardingRule ->
+        forwardingRule.target && Utils.getTargetProxyType(forwardingRule.target) != GoogleTargetProxyType.SSL &&
+          forwardingRule.name in serverGroup.loadBalancers
+      }
+    }
 
-    log.debug("Attempting to delete backends for ${serverGroup.name} from the following Http load balancers: ${httpLoadBalancersInMetadata}")
+    def notDeleted = httpLoadBalancersInMetadata - (foundHttpLoadBalancers.collect { it.name })
     if (notDeleted) {
       log.warn("Could not locate the following Http load balancers: ${notDeleted}. Proceeding with other backend deletions without mutating them.")
     }
@@ -922,10 +1044,10 @@ class GCEUtil {
       String proxyType = Utils.getTargetProxyType(fr.target)
       def proxy = null
       switch (proxyType) {
-        case "targetHttpProxies":
+        case GoogleTargetProxyType.HTTP:
           proxy = compute.targetHttpProxies().get(project, getLocalName(fr.target)).execute()
           break
-        case "targetHttpsProxies":
+        case GoogleTargetProxyType.HTTPS:
           proxy = compute.targetHttpsProxies().get(project, getLocalName(fr.target)).execute()
           break
         default:
@@ -940,16 +1062,19 @@ class GCEUtil {
 
   def static getTargetProxyFromRule(Compute compute, String project, ForwardingRule forwardingRule) {
     String target = forwardingRule.getTarget()
-    String targetProxyType = Utils.getTargetProxyType(target)
+    GoogleTargetProxyType targetProxyType = Utils.getTargetProxyType(target)
     String targetProxyName = getLocalName(target)
 
     def proxyGet = null
     switch (targetProxyType) {
-      case "targetHttpProxies":
+      case GoogleTargetProxyType.HTTP:
         proxyGet = { compute.targetHttpProxies().get(project, targetProxyName).execute() }
         break
-      case "targetHttpsProxies":
+      case GoogleTargetProxyType.HTTPS:
         proxyGet = { compute.targetHttpsProxies().get(project, targetProxyName).execute() }
+        break
+      case GoogleTargetProxyType.SSL:
+        proxyGet = { compute.targetSslProxies().get(project, targetProxyName).execute() }
         break
       default:
         log.warn("Unexpected target proxy type for $targetProxyName.")
@@ -991,17 +1116,22 @@ class GCEUtil {
       compute.globalForwardingRules().delete(project, ruleToDelete.getName()).execute()
       String targetProxyLink = ruleToDelete.getTarget()
       String targetProxyName = getLocalName(targetProxyLink)
-      String targetProxyType = Utils.getTargetProxyType(targetProxyLink)
+      GoogleTargetProxyType targetProxyType = Utils.getTargetProxyType(targetProxyLink)
       Closure deleteProxyClosure = { null }
       switch (targetProxyType) {
-        case "targetHttpProxies":
+        case GoogleTargetProxyType.HTTP:
           deleteProxyClosure = {
             compute.targetHttpProxies().delete(project, targetProxyName).execute()
           }
           break
-        case "targetHttpsProxies":
+        case GoogleTargetProxyType.HTTPS:
           deleteProxyClosure = {
             compute.targetHttpsProxies().delete(project, targetProxyName).execute()
+          }
+          break
+        case GoogleTargetProxyType.SSL:
+          deleteProxyClosure = {
+            compute.targetSslProxies().delete(project, targetProxyName).execute()
           }
           break
         default:
@@ -1012,7 +1142,7 @@ class GCEUtil {
       Operation result = proxyDeleteRetry.doRetry(
         deleteProxyClosure,
         'delete',
-        "target http proxy ${targetProxyName}",
+        "target proxy ${targetProxyName}",
         null,
         null,
         [400, 412],

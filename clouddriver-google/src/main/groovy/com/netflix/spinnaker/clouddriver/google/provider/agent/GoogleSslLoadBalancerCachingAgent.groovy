@@ -37,10 +37,7 @@ import com.netflix.spinnaker.clouddriver.google.deploy.GCEUtil
 import com.netflix.spinnaker.clouddriver.google.model.GoogleHealthCheck
 import com.netflix.spinnaker.clouddriver.google.model.callbacks.Utils
 import com.netflix.spinnaker.clouddriver.google.model.health.GoogleLoadBalancerHealth
-import com.netflix.spinnaker.clouddriver.google.model.loadbalancing.GoogleBackendService
-import com.netflix.spinnaker.clouddriver.google.model.loadbalancing.GoogleLoadBalancedBackend
-import com.netflix.spinnaker.clouddriver.google.model.loadbalancing.GoogleLoadBalancingScheme
-import com.netflix.spinnaker.clouddriver.google.model.loadbalancing.GoogleSslLoadBalancer
+import com.netflix.spinnaker.clouddriver.google.model.loadbalancing.*
 import com.netflix.spinnaker.clouddriver.google.security.GoogleNamedAccountCredentials
 import groovy.util.logging.Slf4j
 
@@ -179,7 +176,7 @@ class GoogleSslLoadBalancerCachingAgent extends AbstractGoogleCachingAgent imple
     @Override
     void onSuccess(ForwardingRuleList forwardingRuleList, HttpHeaders responseHeaders) throws IOException {
       forwardingRuleList?.items?.each { ForwardingRule forwardingRule ->
-        if (forwardingRule.target && Utils.getTargetProxyType(forwardingRule.target) == 'targetSslProxies') {
+        if (forwardingRule.target && Utils.getTargetProxyType(forwardingRule.target) == GoogleTargetProxyType.SSL) {
           def newLoadBalancer = new GoogleSslLoadBalancer(
             name: forwardingRule.name,
             account: accountName,
@@ -286,12 +283,24 @@ class GoogleSslLoadBalancerCachingAgent extends AbstractGoogleCachingAgent imple
     void onSuccess(HealthCheck healthCheck, HttpHeaders responseHeaders) throws IOException {
       def port = null
       def hcType = null
+      def requestPath = null
       if (healthCheck.tcpHealthCheck) {
         port = healthCheck.tcpHealthCheck.port
         hcType = GoogleHealthCheck.HealthCheckType.TCP
       } else if (healthCheck.sslHealthCheck) {
         port = healthCheck.sslHealthCheck.port
         hcType = GoogleHealthCheck.HealthCheckType.SSL
+      } else if (healthCheck.httpHealthCheck) {
+        port = healthCheck.httpHealthCheck.port
+        requestPath = healthCheck.httpHealthCheck.requestPath
+        hcType = GoogleHealthCheck.HealthCheckType.HTTP
+      } else if (healthCheck.httpsHealthCheck) {
+        port = healthCheck.httpsHealthCheck.port
+        requestPath = healthCheck.httpsHealthCheck.requestPath
+        hcType = GoogleHealthCheck.HealthCheckType.HTTPS
+      } else if (healthCheck.udpHealthCheck) {
+        port = healthCheck.udpHealthCheck.port
+        hcType = GoogleHealthCheck.HealthCheckType.UDP
       }
 
       if (port && hcType) {
@@ -299,6 +308,7 @@ class GoogleSslLoadBalancerCachingAgent extends AbstractGoogleCachingAgent imple
           name: healthCheck.name,
           healthCheckType: hcType,
           port: port,
+          requestPath: requestPath ?: "",
           checkIntervalSec: healthCheck.checkIntervalSec,
           timeoutSec: healthCheck.timeoutSec,
           unhealthyThreshold: healthCheck.unhealthyThreshold,

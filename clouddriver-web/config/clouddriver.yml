@@ -126,7 +126,7 @@ azure:
 google:
   enabled: ${GOOGLE_ENABLED:false}
   accounts:
-    - name: primary
+    - name: ${GCE_ACCOUNT:primary}
       project: ${GCE_PROJECT:sample}
       jsonPath: '/opt/clouddriver/credentials/gce.credentials'
   baseImageProjects:

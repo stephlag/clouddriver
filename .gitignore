@@ -12,3 +12,4 @@ application.yml
 README.html
 *~
 cache
+es-tmp/

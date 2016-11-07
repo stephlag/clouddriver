@@ -23,7 +23,6 @@ import com.netflix.spinnaker.clouddriver.model.ServerGroup
 import groovy.transform.InheritConstructors
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import retrofit.RetrofitError
 import retrofit.client.Response
@@ -39,17 +38,8 @@ abstract class AbstractEurekaSupport {
                                              String instanceId,
                                              String asgName)
 
-  private static final long THROTTLE_MS = 150
-
-  static final int ATTEMPT_SHORT_CIRCUIT_EVERY = 100
-  static final int DISCOVERY_RETRY_MAX = 10
-  private static final long DEFAULT_DISCOVERY_RETRY_MS = 3000
-
-  @Value('${discovery.retry.max:#{T(com.netflix.spinnaker.clouddriver.eureka.deploy.ops.AbstractEurekaSupport).DISCOVERY_RETRY_MAX}}')
-  int discoveryRetry = DISCOVERY_RETRY_MAX
-
-  @Value('${discovery.attemptShortCurcuitEvery:#{T(com.netflix.spinnaker.clouddriver.eureka.deploy.ops.AbstractEurekaSupport).ATTEMPT_SHORT_CIRCUIT_EVERY}}')
-  int attemptShortCircuitEveryNInstances = ATTEMPT_SHORT_CIRCUIT_EVERY
+  @Autowired(required = false)
+  EurekaSupportConfigurationProperties eurekaSupportConfigurationProperties
 
   @Autowired
   List<ClusterProvider> clusterProviders
@@ -60,11 +50,15 @@ abstract class AbstractEurekaSupport {
                                          DiscoveryStatus discoveryStatus,
                                          List<String> instanceIds) {
 
+    if (eurekaSupportConfigurationProperties == null) {
+      throw new IllegalStateException("eureka configuration not supplied")
+    }
+
     def eureka = getEureka(description.credentials, description.region)
     def random = new Random()
     def applicationName = null
     try {
-      applicationName = retry(task, discoveryRetry) { retryCount ->
+      applicationName = retry(task, eurekaSupportConfigurationProperties.retryMax) { retryCount ->
         def instanceId = instanceIds[random.nextInt(instanceIds.size())]
         task.updateStatus phaseName, "Looking up discovery application name for instance $instanceId"
 
@@ -86,11 +80,11 @@ abstract class AbstractEurekaSupport {
     int index = 0
     for (String instanceId : instanceIds) {
       if (index > 0) {
-        sleep AbstractEurekaSupport.THROTTLE_MS
+        sleep eurekaSupportConfigurationProperties.throttleMillis
       }
 
       if (discoveryStatus == DiscoveryStatus.Disable) {
-        if (index % attemptShortCircuitEveryNInstances == 0) {
+        if (index % eurekaSupportConfigurationProperties.attemptShortCircuitEveryNInstances == 0) {
           try {
             def hasUpInstances = doesCachedClusterContainDiscoveryStatus(
               clusterProviders, description.credentialAccount, description.region, description.asgName, "UP"
@@ -110,7 +104,7 @@ abstract class AbstractEurekaSupport {
       }
 
       try {
-        retry(task, discoveryRetry) { retryCount ->
+        retry(task, eurekaSupportConfigurationProperties.retryMax) { retryCount ->
           task.updateStatus phaseName, "Attempting to mark ${instanceId} as '${discoveryStatus.value}' in discovery (attempt: ${retryCount})."
 
           Response resp = eureka.updateInstanceStatus(applicationName, instanceId, discoveryStatus.value)
@@ -225,7 +219,7 @@ abstract class AbstractEurekaSupport {
   }
 
   protected long getDiscoveryRetryMs() {
-    return AbstractEurekaSupport.DEFAULT_DISCOVERY_RETRY_MS
+    return eurekaSupportConfigurationProperties.retryIntervalMillis
   }
 
   @InheritConstructors
